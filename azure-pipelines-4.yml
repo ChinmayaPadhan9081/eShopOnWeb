@@ -1,0 +1,31 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- checkout: self
+
+- task: 03d343c2-6ac0-4408-8ccd-a5398c85dca8@1
+  displayName: 'Containerization Scan - Trivy'
+  inputs:
+    cavScanServiceConnection: 'cavscan-demo'
+    scanType: 'containerization'
+    containerEngine: 'trivy'
+    runMode: 'standalone'
+    allowInsecureSSL: 'true'
+
+- task: 03d343c2-6ac0-4408-8ccd-a5398c85dca8@1
+  displayName: 'Dynamic Scan - ZAP'
+  inputs:
+    cavScanServiceConnection: 'cavscan-demo'
+    scanType: 'dynamic'
+    dynamicEngine: 'zap'
+    runMode: 'kubernetes'
+    allowInsecureSSL: 'true'

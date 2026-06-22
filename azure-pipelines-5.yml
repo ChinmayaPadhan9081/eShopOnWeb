@@ -1,0 +1,46 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- checkout: self
+
+- task: CavSecurityPipelineCP99@1
+  displayName: 'Cavisson Full Security Flow'
+  inputs:
+    cavScanServiceConnection: 'cav-scan-demo'
+    securityScanApiBaseUrl: 'https://sonar1.cav-test.com:4444'
+
+    applicationType: 'dotnet'
+
+    runStaticScan: true
+    staticEngine: 'sonarqube'
+    project: 'eshoponweb'
+    targetPath: ''
+
+    buildCommand: |
+      dotnet restore
+      dotnet build --configuration Release
+
+    dockerBuildCommand: |
+      docker build -t eshoponweb:$(Build.BuildNumber) -f src/Web/Dockerfile .
+
+    containerEngine: 'trivy'
+    containerRunMode: 'standalone'
+    imageName: 'eshoponweb:$(Build.BuildNumber)'
+
+    deployCommand: |
+      echo "Deploy / run application command here"
+
+    dynamicEngine: 'zap'
+    dynamicRunMode: 'standalone'
+    targetUrl: 'http://localhost:8080'
+
+    allowInsecureSSL: true

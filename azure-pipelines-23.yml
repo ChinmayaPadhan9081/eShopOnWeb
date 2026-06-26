@@ -1,0 +1,111 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+- checkout: self
+
+- task: CavSecurityPipelineCP100@1
+  displayName: 'Cavisson Security Pipeline CP100'
+  inputs:
+    cavScanServiceConnection: 'cav-scan'
+    securityScanApiBaseUrl: 'http://sonar1.cav-test.com:4444'
+
+    applicationType: 'dotnet'
+
+    runStaticScan: false
+    staticEngine: 'sonarqube'
+    project: 'eShopOnWeb'
+    targetPath: ''
+
+    buildCommand: |
+      dotnet restore eShopOnWeb.sln
+      dotnet build eShopOnWeb.sln --configuration Release --no-restore
+
+    dockerBuildCommand: |
+      docker build -t eshoponweb:$(Build.BuildNumber) -f src/Web/Dockerfile .
+
+    containerEngine: 'trivy'
+    containerRunMode: 'standalone'
+    trivyMode: 'image'
+    trivyTarget: 'eshoponweb:$(Build.BuildNumber)'
+    trivyReportDir: '$(System.DefaultWorkingDirectory)/trivy-reports'
+
+    imageName: 'eshoponweb:$(Build.BuildNumber)'
+
+    deployCommand: |
+      set -e
+
+      echo "Removing old eshoponweb container if exists..."
+      docker rm -f eshoponweb 2>/dev/null || true
+
+      echo "Starting eshoponweb container..."
+      docker run -d --name eshoponweb \
+        -p 3001:8080 \
+        -e ASPNETCORE_ENVIRONMENT=Development \
+        -e ASPNETCORE_URLS=http://0.0.0.0:8080 \
+        -e DOTNET_URLS=http://0.0.0.0:8080 \
+        -e ASPNETCORE_HTTP_PORTS=8080 \
+        -e DOTNET_HTTP_PORTS=8080 \
+        -e UseOnlyInMemoryDatabase=true \
+        -e baseUrls__webBase=http://127.0.0.1:3001/ \
+        -e baseUrls__apiBase=http://127.0.0.1:3001/api/ \
+        -e BaseUrls__WebBase=http://127.0.0.1:3001/ \
+        -e BaseUrls__ApiBase=http://127.0.0.1:3001/api/ \
+        -e urls=http://0.0.0.0:8080 \
+        eshoponweb:$(Build.BuildNumber)
+
+      echo "Waiting for application to start..."
+      sleep 10
+
+      echo "Container status after 10 seconds:"
+      docker ps -a
+
+      echo "Container logs after 10 seconds:"
+      docker logs eshoponweb || true
+
+      echo "Waiting more for application..."
+      sleep 20
+
+      echo "Final container status:"
+      docker ps -a
+
+      echo "Final container logs:"
+      docker logs eshoponweb || true
+
+      echo "Testing application URL..."
+      for i in 1 2 3 4 5 6; do
+        if curl -f http://127.0.0.1:3001; then
+          echo "Application is reachable on http://127.0.0.1:3001"
+          exit 0
+        fi
+
+        echo "Application not ready yet. Retry $i..."
+        docker ps -a
+        docker logs eshoponweb || true
+        sleep 10
+      done
+
+      echo "Application is not reachable after retries."
+      docker inspect eshoponweb || true
+      docker logs eshoponweb || true
+      exit 1
+
+    dynamicEngine: 'zap'
+    dynamicRunMode: 'standalone'
+    zapMode: 'baseline'
+    zapTarget: 'http://127.0.0.1:3001'
+    zapReportDir: '$(System.DefaultWorkingDirectory)/zap-reports'
+
+    allowInsecureSSL: true
+
+  env:
+    TRIVY_IMAGE: 'aquasec/trivy:latest'
+    DB_REPOSITORY: 'public.ecr.aws/aquasecurity/trivy-db:2'

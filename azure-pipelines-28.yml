@@ -1,0 +1,233 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+jobs:
+- job: SecurityScanJob
+  displayName: 'Security Scan Job'
+  timeoutInMinutes: 120
+
+  pool:
+    vmImage: ubuntu-latest
+
+  steps:
+  - checkout: self
+    fetchDepth: 0
+
+  # =====================================================
+  # 1. SonarQube Prepare
+  # Use the same SonarQube service connection that works
+  # in your standalone SonarQube pipeline.
+  # =====================================================
+  - task: SonarQubePrepare@7
+    displayName: 'Prepare SonarQube Analysis'
+    inputs:
+      SonarQube: 'sonarqube'
+      scannerMode: 'dotnet'
+      projectKey: 'eShopOnWeb'
+      projectName: 'eShopOnWeb'
+      extraProperties: |
+        sonar.projectBaseDir=$(Build.SourcesDirectory)
+        sonar.scm.provider=git
+
+  # =====================================================
+  # 2. Build Application for SonarQube
+  # For .NET SonarQube, build must happen between
+  # Prepare and Analyze.
+  # =====================================================
+  - script: |
+      set -e
+
+      echo "Restoring solution..."
+      dotnet restore eShopOnWeb.sln
+
+      echo "Building solution..."
+      dotnet build eShopOnWeb.sln --configuration Release --no-restore
+    displayName: 'Build Application for SonarQube'
+
+  # =====================================================
+  # 3. SonarQube Analyze
+  # =====================================================
+  - task: SonarQubeAnalyze@7
+    displayName: 'Run SonarQube Analysis'
+
+  # =====================================================
+  # 4. SonarQube Publish Quality Gate Result
+  # =====================================================
+  - task: SonarQubePublish@7
+    displayName: 'Publish SonarQube Quality Gate'
+    inputs:
+      pollingTimeoutSec: '300'
+
+  # =====================================================
+  # 5. Pre Pull Trivy and ZAP Images
+  # This reduces Docker image pull retry/cancel issue.
+  # =====================================================
+  - script: |
+      set -e
+
+      echo "Checking Docker..."
+      docker version
+
+      echo "Pre-pulling Trivy image..."
+      for i in 1 2 3; do
+        echo "Trivy pull attempt $i"
+        if docker pull aquasec/trivy:latest; then
+          echo "Trivy image pulled successfully."
+          break
+        fi
+
+        if [ "$i" = "3" ]; then
+          echo "Trivy image pull failed after retries."
+          exit 1
+        fi
+
+        sleep 20
+      done
+
+      echo "Pre-pulling ZAP image..."
+      for i in 1 2 3 4 5; do
+        echo "ZAP pull attempt $i"
+        if timeout 20m docker pull ghcr.io/zaproxy/zaproxy:stable; then
+          echo "ZAP image pulled successfully."
+          echo "##vso[task.setvariable variable=ZAP_IMAGE]ghcr.io/zaproxy/zaproxy:stable"
+          break
+        fi
+
+        if [ "$i" = "5" ]; then
+          echo "GHCR ZAP image pull failed. Trying Docker Hub fallback..."
+
+          if timeout 20m docker pull zaproxy/zap-stable; then
+            echo "Docker Hub ZAP image pulled successfully."
+            echo "##vso[task.setvariable variable=ZAP_IMAGE]zaproxy/zap-stable"
+            break
+          fi
+
+          echo "ZAP image pull failed from both registries."
+          exit 1
+        fi
+
+        sleep 30
+      done
+
+      echo "Available Docker images:"
+      docker images
+    displayName: 'Pre Pull Trivy and ZAP Images'
+
+  # =====================================================
+  # 6. Cavisson CP100
+  # Static scan disabled here because SonarQube already
+  # completed successfully above.
+  #
+  # Flow inside CP100:
+  # Docker image build -> Trivy scan -> Deploy -> ZAP scan
+  # -> Publish security report artifact.
+  # =====================================================
+  - task: CavSecurityPipelineCP100@1
+    displayName: 'Cavisson Security Pipeline CP100'
+    timeoutInMinutes: 90
+    inputs:
+      cavScanServiceConnection: 'cav-scan'
+      securityScanApiBaseUrl: 'https://sonar1.cav-test.com:4444'
+
+      applicationType: 'dotnet'
+
+      # IMPORTANT:
+      # SonarQube already ran using official SonarQube extension.
+      # So disable CP100 internal cav_scanner.sh.
+      runStaticScan: false
+      staticEngine: 'sonarqube'
+      project: 'eShopOnWeb'
+      targetPath: ''
+
+      # CP100 requires buildCommand input.
+      # Build already completed during SonarQube scan.
+      buildCommand: |
+        echo "Build already completed during SonarQube analysis step."
+        echo "Skipping duplicate dotnet build inside CP100."
+
+      dockerBuildCommand: |
+        set -e
+
+        echo "Building Docker image..."
+        docker build -t eshoponweb:$(Build.BuildNumber) -f src/Web/Dockerfile .
+
+        echo "Checking built Docker image..."
+        docker images | grep eshoponweb
+
+      containerEngine: 'trivy'
+      containerRunMode: 'standalone'
+      trivyMode: 'image'
+      trivyTarget: 'eshoponweb:$(Build.BuildNumber)'
+      trivyReportDir: '$(System.DefaultWorkingDirectory)/trivy-reports'
+
+      imageName: 'eshoponweb:$(Build.BuildNumber)'
+
+      deployCommand: |
+        set -e
+
+        echo "Removing old eshoponweb container if exists..."
+        docker rm -f eshoponweb 2>/dev/null || true
+
+        echo "Starting eshoponweb container..."
+        docker run -d --name eshoponweb \
+          -p 3001:8080 \
+          -e ASPNETCORE_ENVIRONMENT=Development \
+          -e ASPNETCORE_URLS=http://0.0.0.0:8080 \
+          -e DOTNET_URLS=http://0.0.0.0:8080 \
+          -e ASPNETCORE_HTTP_PORTS=8080 \
+          -e DOTNET_HTTP_PORTS=8080 \
+          -e UseOnlyInMemoryDatabase=true \
+          -e baseUrls__webBase=http://127.0.0.1:3001/ \
+          -e baseUrls__apiBase=http://127.0.0.1:3001/api/ \
+          -e BaseUrls__WebBase=http://127.0.0.1:3001/ \
+          -e BaseUrls__ApiBase=http://127.0.0.1:3001/api/ \
+          eshoponweb:$(Build.BuildNumber)
+
+        echo "Waiting for application to start..."
+        sleep 30
+
+        echo "Container status:"
+        docker ps -a
+
+        echo "Container logs:"
+        docker logs eshoponweb || true
+
+        echo "Testing application URL..."
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -f http://127.0.0.1:3001; then
+            echo "Application is reachable on http://127.0.0.1:3001"
+            exit 0
+          fi
+
+          echo "Application not ready yet. Retry $i/10..."
+          docker ps -a
+          docker logs eshoponweb || true
+          sleep 10
+        done
+
+        echo "Application is not reachable after retries."
+        echo "Final container inspect:"
+        docker inspect eshoponweb || true
+
+        echo "Final container logs:"
+        docker logs eshoponweb || true
+
+        exit 1
+
+      dynamicEngine: 'zap'
+      dynamicRunMode: 'standalone'
+      zapMode: 'baseline'
+      zapTarget: 'http://127.0.0.1:3001'
+      zapReportDir: '$(System.DefaultWorkingDirectory)/zap-reports'
+
+      allowInsecureSSL: true
+
+    env:
+      TRIVY_IMAGE: 'aquasec/trivy:latest'
+      DB_REPOSITORY: 'public.ecr.aws/aquasecurity/trivy-db:2'
+      ZAP_IMAGE: '$(ZAP_IMAGE)'

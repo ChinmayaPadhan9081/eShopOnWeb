@@ -1,0 +1,126 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+- checkout: self
+
+- task: CavSecurityPipelineCP100@1
+  displayName: 'Cavisson Security Pipeline CP100'
+  inputs:
+    cavScanServiceConnection: 'cav-scan'
+    securityScanApiBaseUrl: 'http://sonar1.cav-test.com:4444'
+
+    applicationType: 'dotnet'
+
+    runStaticScan: false
+    staticEngine: 'sonarqube'
+    project: 'eShopOnWeb'
+    targetPath: ''
+
+    buildCommand: |
+      dotnet restore eShopOnWeb.sln
+      dotnet build eShopOnWeb.sln --configuration Release --no-restore
+
+    dockerBuildCommand: |
+      docker build -t eshoponweb:$(Build.BuildNumber) -f src/Web/Dockerfile .
+
+    containerEngine: 'trivy'
+    containerRunMode: 'standalone'
+    trivyMode: 'image'
+    trivyTarget: 'eshoponweb:$(Build.BuildNumber)'
+    trivyReportDir: '$(System.DefaultWorkingDirectory)/trivy-reports'
+
+    imageName: 'eshoponweb:$(Build.BuildNumber)'
+
+    deployCommand: |
+      echo "Removing old eshoponweb container if exists..."
+      docker rm -f eshoponweb 2>/dev/null || true
+
+      echo "Starting eshoponweb container..."
+      docker run -d --name eshoponweb \
+        -p 3001:8080 \
+        -e ASPNETCORE_ENVIRONMENT=Development \
+        -e ASPNETCORE_URLS=http://+:8080 \
+        -e baseUrls__webBase=http://127.0.0.1:3001/ \
+        -e baseUrls__apiBase=http://127.0.0.1:3001/api/ \
+        -e BaseUrls__WebBase=http://127.0.0.1:3001/ \
+        -e BaseUrls__ApiBase=http://127.0.0.1:3001/api/ \
+        eshoponweb:$(Build.BuildNumber)
+
+      echo "Waiting for application to start..."
+      sleep 30
+
+      echo "Container status:"
+      docker ps -a
+
+      echo "Container logs:"
+      docker logs eshoponweb || true
+
+      echo "Testing application URL..."
+      curl -f http://127.0.0.1:3001 || (echo "Application is not reachable" && docker logs eshoponweb && exit 1)
+
+    dynamicEngine: 'zap'
+    dynamicRunMode: 'standalone'
+    zapMode: 'baseline'
+    zapTarget: 'http://127.0.0.1:3001'
+    zapReportDir: '$(System.DefaultWorkingDirectory)/zap-reports'
+
+    allowInsecureSSL: true
+
+  env:
+    TRIVY_IMAGE: 'aquasec/trivy:latest'
+    DB_REPOSITORY: 'public.ecr.aws/aquasecurity/trivy-db:2'
+
+- script: |
+    echo "Creating final report directory..."
+
+    REPORT_ROOT="$(Build.ArtifactStagingDirectory)/security-reports/eShopOnWeb/$(Build.BuildNumber)"
+
+    mkdir -p "$REPORT_ROOT/trivy"
+    mkdir -p "$REPORT_ROOT/zap"
+    mkdir -p "$REPORT_ROOT/sonarqube"
+
+    echo "Copying Trivy reports..."
+    if [ -d "$(System.DefaultWorkingDirectory)/trivy-reports" ]; then
+      cp -r "$(System.DefaultWorkingDirectory)/trivy-reports/"* "$REPORT_ROOT/trivy/" || true
+    fi
+
+    echo "Copying ZAP reports..."
+    if [ -d "$(System.DefaultWorkingDirectory)/zap-reports" ]; then
+      cp -r "$(System.DefaultWorkingDirectory)/zap-reports/"* "$REPORT_ROOT/zap/" || true
+    fi
+
+    echo "Copying SonarQube scanner metadata if present..."
+    if [ -f "$(System.DefaultWorkingDirectory)/.scannerwork/report-task.txt" ]; then
+      cp "$(System.DefaultWorkingDirectory)/.scannerwork/report-task.txt" "$REPORT_ROOT/sonarqube/" || true
+    fi
+
+    cat > "$REPORT_ROOT/security-report-summary.json" <<EOF
+    {
+      "project": "eShopOnWeb",
+      "buildNumber": "$(Build.BuildNumber)",
+      "trivyReportPath": "$REPORT_ROOT/trivy",
+      "zapReportPath": "$REPORT_ROOT/zap",
+      "sonarqubeReportPath": "$REPORT_ROOT/sonarqube"
+    }
+    EOF
+
+    echo "Final report files:"
+    find "$(Build.ArtifactStagingDirectory)/security-reports" -type f -print || true
+  displayName: 'Collect Security Reports'
+  condition: always()
+
+- task: PublishPipelineArtifact@1
+  displayName: 'Publish Security Reports'
+  inputs:
+    targetPath: '$(Build.ArtifactStagingDirectory)/security-reports'
+    artifact: 'security-reports'
+  condition: always()

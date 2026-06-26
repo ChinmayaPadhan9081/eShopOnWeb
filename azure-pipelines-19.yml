@@ -1,0 +1,72 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+- checkout: self
+
+- task: CavSecurityPipelineCP100@1
+  displayName: 'Cavisson Security Pipeline CP100'
+  inputs:
+    cavScanServiceConnection: 'cav-scan'
+    securityScanApiBaseUrl: 'http://sonar1.cav-test.com:4444'
+
+    applicationType: 'dotnet'
+
+    runStaticScan: false
+    staticEngine: 'sonarqube'
+    project: 'eShopOnWeb'
+    targetPath: ''
+
+    buildCommand: |
+      dotnet restore eShopOnWeb.sln
+      dotnet build eShopOnWeb.sln --configuration Release --no-restore
+
+    dockerBuildCommand: |
+      docker build -t eshoponweb:$(Build.BuildNumber) -f src/Web/Dockerfile .
+
+    containerEngine: 'trivy'
+    containerRunMode: 'standalone'
+    trivyMode: 'image'
+    trivyTarget: 'eshoponweb:$(Build.BuildNumber)'
+    trivyReportDir: '$(System.DefaultWorkingDirectory)/trivy-reports'
+
+    imageName: 'eshoponweb:$(Build.BuildNumber)'
+
+    deployCommand: |
+      docker rm -f eshoponweb || true
+
+      docker run -d --name eshoponweb \
+        -p 3001:8080 \
+        -e ASPNETCORE_ENVIRONMENT=Development \
+        -e ASPNETCORE_URLS=http://+:8080 \
+        -e baseUrls__webBase=http://127.0.0.1:3001/ \
+        -e baseUrls__apiBase=http://127.0.0.1:3001/api/ \
+        eshoponweb:$(Build.BuildNumber)
+
+      sleep 30
+
+      echo "Checking container status..."
+      docker ps -a
+
+      echo "Checking application URL..."
+      curl -f http://127.0.0.1:3001 || (docker logs eshoponweb && exit 1)
+
+    dynamicEngine: 'zap'
+    dynamicRunMode: 'standalone'
+    zapMode: 'baseline'
+    zapTarget: 'http://127.0.0.1:3001'
+    zapReportDir: '$(System.DefaultWorkingDirectory)/zap-reports'
+
+    allowInsecureSSL: true
+
+  env:
+    TRIVY_IMAGE: 'aquasec/trivy:latest'
+    DB_REPOSITORY: 'public.ecr.aws/aquasecurity/trivy-db:2'

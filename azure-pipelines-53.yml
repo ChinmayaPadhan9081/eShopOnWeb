@@ -1,0 +1,29 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+pool:
+  name: Default
+
+steps:
+- script: |
+    whoami
+    groups
+    docker version
+    docker ps
+  displayName: 'Check Docker Permission'
+
+- task: CavSecurityPipelineCP100@1
+  inputs:
+    cavScanServiceConnection: 'cav-scan'
+    scanType: 'dynamic'
+    dynamicRunMode: 'standalone'
+    zapMode: 'baseline'
+    zapTarget: 'http://10.10.10.114:3001/'

@@ -1,0 +1,31 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  name: Default
+
+steps:
+- script: |
+    echo "Checking Docker..."
+    docker version
+    docker ps
+
+    echo "Checking ZAP image pull..."
+    docker pull ghcr.io/zaproxy/zaproxy:stable || docker pull zaproxy/zap-stable
+
+    echo "Checking app URL..."
+    curl -I --connect-timeout 10 --max-time 20 http://10.10.10.114:3001/
+  displayName: 'Pre-check Docker and ZAP'
+
+- task: CavSecurityPipelineCP100@1
+  inputs:
+    cavScanServiceConnection: 'cav-scan'
+    scanType: 'dynamic'
+    dynamicRunMode: 'standalone'
+    zapMode: 'baseline'
+    zapTarget: 'http://10.10.10.114:3001/'

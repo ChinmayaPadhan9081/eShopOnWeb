@@ -1,0 +1,31 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+- script: echo Hello, world!
+  displayName: 'Run a one-line script'
+  
+
+- script: |
+    echo Add other tasks to build, test, and deploy your project.
+    echo See https://aka.ms/yaml
+    echo "Checking ZAP target URL..."
+    curl -I --connect-timeout 10 --max-time 20 http://10.10.10.114:3001/
+  displayName: 'Check Application URL'
+
+- task: CavSecurityPipelineCP100@1
+  inputs:
+    cavScanServiceConnection: 'cav-scan'
+    scanType: 'dynamic'
+    dynamicRunMode: 'standalone'
+    zapMode: 'baseline'
+    zapTarget: 'http://10.10.10.114:3001/'
+
